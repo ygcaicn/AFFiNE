@@ -2,14 +2,13 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const scriptsFolder = join(fileURLToPath(import.meta.url), '..', '..');
 const scriptsSrcFolder = join(scriptsFolder, 'src');
 const projectRoot = join(scriptsFolder, '..', '..');
-const loader = join(scriptsFolder, 'register.js');
 
-const [node, _self, file, ...options] = process.argv;
+const [_node, _self, file, ...options] = process.argv;
 
 if (!file) {
   console.error(`Please provide a file to run, e.g. 'run src/index.{js/ts}'`);
@@ -54,19 +53,12 @@ if (!scriptLocation) {
   process.exit(1);
 }
 
-const nodeOptions = [];
-
-if (
-  scriptLocation.endsWith('.ts') ||
-  scriptLocation.startsWith(scriptsFolder)
-) {
-  nodeOptions.unshift(`--import=${pathToFileURL(loader)}`);
-} else {
-  nodeOptions.unshift('--experimental-specifier-resolution=node');
-}
-
-spawn(node, [...nodeOptions, scriptLocation, ...options], {
-  stdio: 'inherit',
-}).on('exit', code => {
+spawn(
+  'yarn',
+  ['workspace', '@affine-tools/cli', 'tsx', scriptLocation, ...options],
+  {
+    stdio: 'inherit',
+  }
+).on('exit', code => {
   process.exit(code);
 });

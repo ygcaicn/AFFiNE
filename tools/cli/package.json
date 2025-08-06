@@ -4,12 +4,7 @@
   "type": "module",
   "private": true,
   "bin": {
-    "affine": "./bin/cli.js",
     "r": "./bin/runner.js"
-  },
-  "exports": {
-    "./loader": "./loader.js",
-    "./bundle": "./src/bundle.ts"
   },
   "scripts": {
     "affine": "r ./src/affine.ts"
@@ -46,7 +41,7 @@
     "swc-loader": "^0.2.6",
     "tailwindcss": "^4.0.0",
     "terser-webpack-plugin": "^5.3.10",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.20.3",
     "typanion": "^3.14.0",
     "typescript": "^5.5.4",
     "webpack": "^5.97.1",
