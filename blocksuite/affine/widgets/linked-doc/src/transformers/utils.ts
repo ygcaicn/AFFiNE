@@ -102,7 +102,11 @@ export class Unzip {
           const result = decoder.decode(bytes);
 
           // check if decoded result is valid
-          if (result && this.isValidDecodedString(result)) {
+          const encoded = new TextEncoder().encode(result);
+          if (
+            encoded.length === bytes.length &&
+            encoded.every((b, i) => b === bytes[i])
+          ) {
             return result;
           }
         } catch {
@@ -114,47 +118,6 @@ export class Unzip {
     }
 
     return null;
-  }
-
-  // check if decoded string is valid
-  private isValidDecodedString(str: string): boolean {
-    // check if contains control characters
-    const controlCharCodes = new Set([
-      0x00,
-      0x01,
-      0x02,
-      0x03,
-      0x04,
-      0x05,
-      0x06,
-      0x07,
-      0x08, // \x00-\x08
-      0x0b,
-      0x0c, // \x0B, \x0C
-      0x0e,
-      0x0f,
-      0x10,
-      0x11,
-      0x12,
-      0x13,
-      0x14,
-      0x15,
-      0x16,
-      0x17,
-      0x18,
-      0x19,
-      0x1a,
-      0x1b,
-      0x1c,
-      0x1d,
-      0x1e,
-      0x1f, // \x0E-\x1F
-      0x7f, // \x7F
-    ]);
-
-    return !str
-      .split('')
-      .some(char => controlCharCodes.has(char.charCodeAt(0)));
   }
 
   *[Symbol.iterator]() {
