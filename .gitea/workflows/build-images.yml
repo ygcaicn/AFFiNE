@@ -42,8 +42,8 @@ jobs:
           input_build_type=""
           input_app_version=""
           if [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
-            input_build_type=$(jq -r '.inputs["build-type"] // ""' "$GITHUB_EVENT_PATH")
-            input_app_version=$(jq -r '.inputs["app-version"] // ""' "$GITHUB_EVENT_PATH")
+            input_build_type=$(node -e "const fs=require('fs'); const event=JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')); process.stdout.write(event.inputs?.['build-type'] || '')")
+            input_app_version=$(node -e "const fs=require('fs'); const event=JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')); process.stdout.write(event.inputs?.['app-version'] || '')")
           fi
 
           git_short_hash=$(git rev-parse --short HEAD)
@@ -83,12 +83,14 @@ jobs:
       - prepare
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+        with:
+          corepack-install: true
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
           app-version: ${{ needs.prepare.outputs.app-version }}
-      - name: Setup Node.js
-        uses: ./.github/actions/setup-node
       - name: Build Core
         run: yarn affine @affine/web build
         env:
@@ -104,7 +106,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           PERFSEE_TOKEN: ${{ secrets.PERFSEE_TOKEN }}
       - name: Upload web artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: web
           path: ./packages/frontend/apps/web/dist
@@ -117,12 +119,14 @@ jobs:
       - prepare
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+        with:
+          corepack-install: true
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
           app-version: ${{ needs.prepare.outputs.app-version }}
-      - name: Setup Node.js
-        uses: ./.github/actions/setup-node
       - name: Build Admin
         run: yarn affine @affine/admin build
         env:
@@ -137,7 +141,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           PERFSEE_TOKEN: ${{ secrets.PERFSEE_TOKEN }}
       - name: Upload admin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: admin
           path: ./packages/frontend/admin/dist
@@ -150,12 +154,14 @@ jobs:
       - prepare
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+        with:
+          corepack-install: true
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
           app-version: ${{ needs.prepare.outputs.app-version }}
-      - name: Setup Node.js
-        uses: ./.github/actions/setup-node
       - name: Build Mobile
         run: yarn affine @affine/mobile build
         env:
@@ -170,7 +176,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           PERFSEE_TOKEN: ${{ secrets.PERFSEE_TOKEN }}
       - name: Upload mobile artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: mobile
           path: ./packages/frontend/apps/mobile/dist
@@ -194,20 +200,39 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+        with:
+          corepack-install: true
+          electron-install: false
+          extra-flags: workspaces focus @affine/server-native
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
           app-version: ${{ needs.prepare.outputs.app-version }}
-      - name: Setup Node.js
-        uses: ./.github/actions/setup-node
-        with:
-          electron-install: false
-          extra-flags: workspaces focus @affine/server-native
+      - name: Install Rust build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(build-essential clang)
+          if [[ "${{ matrix.targets.name }}" == "x86_64-unknown-linux-gnu" && "$(uname -m)" != "x86_64" ]]; then
+            packages+=(gcc-x86-64-linux-gnu g++-x86-64-linux-gnu libc6-dev-amd64-cross)
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          else
+            apt-get update
+            apt-get install -y --no-install-recommends "${packages[@]}"
+          fi
       - name: Build Rust
         uses: ./.github/actions/build-rust
         env:
           AFFINE_PRO_PUBLIC_KEY: ${{ secrets.AFFINE_PRO_PUBLIC_KEY }}
           AFFINE_PRO_LICENSE_AES_KEY: ${{ secrets.AFFINE_PRO_LICENSE_AES_KEY }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: x86_64-linux-gnu-gcc
+          CC_x86_64_unknown_linux_gnu: x86_64-linux-gnu-gcc -D_BSD_SOURCE
+          CXX_x86_64_unknown_linux_gnu: x86_64-linux-gnu-g++ -D_BSD_SOURCE
         with:
           target: ${{ matrix.targets.name }}
           package: '@affine/server-native'
@@ -215,7 +240,7 @@ jobs:
         run: |
           mv ./packages/backend/native/server-native.node ./packages/backend/native/${{ matrix.targets.file }}
       - name: Upload ${{ matrix.targets.file }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: server-native-${{ matrix.targets.file }}
           path: ./packages/backend/native/${{ matrix.targets.file }}
@@ -229,27 +254,37 @@ jobs:
       - build-server-native
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
+        with:
+          corepack-install: true
+          electron-install: false
+          extra-flags: workspaces focus @affine/server @types/affine__env
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
           app-version: ${{ needs.prepare.outputs.app-version }}
-      - name: Setup Node.js
-        uses: ./.github/actions/setup-node
+      - name: Download server-native.x64.node
+        uses: actions/download-artifact@v3
         with:
-          electron-install: false
-          extra-flags: workspaces focus @affine/server @types/affine__env
-      - name: Download server-native
-        uses: actions/download-artifact@v4
+          name: server-native-server-native.x64.node
+          path: ./packages/backend/native
+      - name: Download server-native.arm64.node
+        uses: actions/download-artifact@v3
         with:
-          pattern: server-native-*
-          merge-multiple: true
+          name: server-native-server-native.arm64.node
+          path: ./packages/backend/native
+      - name: Download server-native.armv7.node
+        uses: actions/download-artifact@v3
+        with:
+          name: server-native-server-native.armv7.node
           path: ./packages/backend/native
       - name: List server-native files
         run: ls -alh ./packages/backend/native
       - name: Build Server
         run: yarn workspace @affine/server build
       - name: Upload server dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: server-dist
           path: ./packages/backend/server/dist
@@ -258,6 +293,9 @@ jobs:
   build-images:
     name: Build Images
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     needs:
       - prepare
       - build-server
@@ -267,7 +305,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download server dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: server-dist
           path: ./packages/backend/server/dist
@@ -277,7 +315,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           logout: false
           username: ${{ gitea.actor }}
-          password: ${{ secrets.GITEA_TOKEN }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -290,21 +328,23 @@ jobs:
           node-version-file: '.nvmrc'
           registry-url: https://npm.pkg.github.com
           scope: '@toeverything'
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Download web artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: web
           path: ./packages/frontend/apps/web/dist
 
       - name: Download mobile artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: mobile
           path: ./packages/frontend/apps/mobile/dist
 
       - name: Download admin artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: admin
           path: ./packages/frontend/admin/dist
