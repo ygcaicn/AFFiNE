@@ -114,9 +114,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Setup Node.js
-        uses: ./.github/actions/setup-node
+        uses: actions/setup-node@v4
         with:
-          corepack-install: true
+          node-version-file: '.nvmrc'
+          registry-url: https://npm.pkg.github.com
+          scope: '@toeverything'
+          cache: 'yarn'
+      - name: Init Corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: yarn --immutable --inline-builds
+        env:
+          HUSKY: '0'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          SENTRYCLI_SKIP_DOWNLOAD: '1'
+          DEBUG: '*'
       - name: Setup Version
         uses: ./.github/actions/setup-version
         with:
@@ -190,7 +203,7 @@ jobs:
               brew install node
               echo "$(brew --prefix node)/bin" >> "$GITHUB_PATH"
             else
-              node_version="22.13.1"
+              node_version="22.22.2"
               case "$(uname -s)-$(uname -m)" in
                 Darwin-arm64) node_platform="darwin-arm64" ;;
                 Darwin-x86_64) node_platform="darwin-x64" ;;
@@ -219,12 +232,27 @@ jobs:
           app-version: ${{ needs.prepare.outputs.app-version }}
       - name: Setup Node.js
         timeout-minutes: 10
-        uses: ./.github/actions/setup-node
+        uses: actions/setup-node@v4
         with:
-          corepack-install: true
-          extra-flags: workspaces focus @affine/electron @affine/monorepo @affine/nbstore @toeverything/infra
-          hard-link-nm: false
-          nmHoistingLimits: workspaces
+          node-version-file: '.nvmrc'
+          registry-url: https://npm.pkg.github.com
+          scope: '@toeverything'
+          cache: 'yarn'
+      - name: Init Corepack
+        run: corepack enable
+      - name: Set nmMode
+        run: yarn config set nmMode classic
+      - name: Set nmHoistingLimits
+        run: yarn config set nmHoistingLimits workspaces
+      - name: Install dependencies
+        run: yarn workspaces focus @affine/electron @affine/monorepo @affine/nbstore @toeverything/infra
+        env:
+          HUSKY: '0'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          SENTRYCLI_SKIP_DOWNLOAD: '1'
+          DEBUG: '*'
+          npm_config_arch: ${{ matrix.spec.arch }}
       - name: Build AFFiNE native
         uses: ./.github/actions/build-rust
         with:
