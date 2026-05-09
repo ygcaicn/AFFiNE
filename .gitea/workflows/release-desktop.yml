@@ -266,6 +266,9 @@ jobs:
       - name: Build Desktop Layers
         run: yarn affine @affine/electron build
       - name: Signing By Apple Developer ID
+        # Temporarily skip this step because the Gitea macOS runner fails in the
+        # action's post-step keychain cleanup, which breaks the arm64 job.
+        if: ${{ false }}
         uses: apple-actions/import-codesign-certs@v6
         with:
           p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
@@ -283,6 +286,9 @@ jobs:
           HOIST_NODE_MODULES: 1
           NODE_OPTIONS: --max-old-space-size=14384
       - name: signing DMG
+        # Temporarily skip macOS DMG signing while the Gitea runner signing path
+        # is being bypassed for desktop release verification.
+        if: ${{ false }}
         run: |
           codesign --force --sign "Developer ID Application: TOEVERYTHING PTE. LTD." packages/frontend/apps/electron/out/${{ env.BUILD_TYPE }}/make/AFFiNE.dmg
       - name: Save artifacts
