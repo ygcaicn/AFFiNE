@@ -21,10 +21,12 @@ import {
   type FileUpload,
 } from '../../../base';
 import { CurrentUser } from '../../../core/auth';
-import { AccessController } from '../../../core/permission';
+import { CopilotAccessService } from '../access';
+import { CopilotEnabled } from '../feature';
 import { CopilotType } from '../resolver';
+import type { TranscriptionJob } from './job';
 import { buildLegacyProjection } from './projection';
-import { CopilotTranscriptionService, TranscriptionJob } from './service';
+import { CopilotTranscriptionService } from './service';
 import type {
   AudioSliceManifestItem,
   MeetingActionItem,
@@ -35,7 +37,6 @@ import type {
   TranscriptionQuality,
   TranscriptionSourceAudio,
   TranscriptionSubmitInput,
-  TranscriptProviderMeta,
 } from './types';
 
 registerEnumType(AiJobStatus, {
@@ -165,15 +166,6 @@ class TranscriptionQualityType implements TranscriptionQuality {
   overflowCount!: number | null;
 }
 
-@ObjectType()
-class TranscriptProviderMetaType implements TranscriptProviderMeta {
-  @Field(() => String, { nullable: true })
-  provider!: string | null;
-
-  @Field(() => String, { nullable: true })
-  model!: string | null;
-}
-
 @InputType()
 class AudioSliceManifestItemInput implements AudioSliceManifestItem {
   @Field(() => Int)
@@ -232,9 +224,6 @@ class SubmitAudioTranscriptionInput implements TranscriptionSubmitInput {
 
   @Field(() => [AudioSliceManifestItemInput], { nullable: true })
   sliceManifest?: AudioSliceManifestItemInput[];
-
-  @Field(() => String, { nullable: true })
-  strategy?: string | null;
 }
 
 @ObjectType()
@@ -272,14 +261,8 @@ class TranscriptionResultType {
   @Field(() => MeetingSummaryV2Type, { nullable: true })
   summaryJson!: TranscriptionPayload['summaryJson'] | null;
 
-  @Field(() => TranscriptProviderMetaType, { nullable: true })
-  providerMeta!: TranscriptionPayload['providerMeta'] | null;
-
   @Field(() => String, { nullable: true })
   version!: string | null;
-
-  @Field(() => String, { nullable: true })
-  strategy!: string | null;
 
   @Field(() => AiJobStatus)
   status!: AiJobStatus;
@@ -291,10 +274,11 @@ const FinishedStatus: Set<AiJobStatus> = new Set([
 ]);
 
 @Injectable()
+@CopilotEnabled()
 @Resolver(() => CopilotType)
 export class CopilotTranscriptionResolver {
   constructor(
-    private readonly ac: AccessController,
+    private readonly access: CopilotAccessService,
     private readonly transcript: CopilotTranscriptionService
   ) {}
 
@@ -317,9 +301,7 @@ export class CopilotTranscriptionResolver {
         normalizedSegments: null,
         normalizedTranscript: null,
         summaryJson: null,
-        providerMeta: null,
         version: null,
-        strategy: null,
       };
       if (FinishedStatus.has(finalJob.status)) {
         finalJob.title = legacy?.title ?? null;
@@ -332,9 +314,7 @@ export class CopilotTranscriptionResolver {
         finalJob.normalizedSegments = ret?.normalizedSegments ?? null;
         finalJob.normalizedTranscript = ret?.normalizedTranscript ?? null;
         finalJob.summaryJson = ret?.summaryJson ?? null;
-        finalJob.providerMeta = ret?.providerMeta ?? null;
         finalJob.version = ret?.version ?? null;
-        finalJob.strategy = ret?.strategy ?? null;
       }
       return finalJob;
     }
@@ -357,23 +337,20 @@ export class CopilotTranscriptionResolver {
     })
     input: SubmitAudioTranscriptionInput | null
   ): Promise<TranscriptionResultType | null> {
-    await this.ac
-      .user(user.id)
-      .workspace(workspaceId)
-      .allowLocal()
-      .assert('Workspace.Copilot');
     const allBlobs = blob ? [blob, ...(blobs || [])].filter(v => !!v) : blobs;
     if (!allBlobs || allBlobs.length === 0) {
       throw new CopilotTranscriptionAudioNotProvided();
     }
 
+    const mode = await this.access.transcriptSubmission(user.id, workspaceId);
     const task = await this.transcript.submitTask(
       user.id,
       workspaceId,
       blobId,
-      // oxlint-disable-next-line @typescript-eslint/await-thenable
+      // oxlint-disable-next-line typescript/await-thenable
       await Promise.all(allBlobs),
-      input ?? undefined
+      input ?? undefined,
+      mode === 'personal'
     );
 
     return this.handleJobResult(task);
@@ -385,16 +362,14 @@ export class CopilotTranscriptionResolver {
     @Args('workspaceId') workspaceId: string,
     @Args('taskId') taskId: string
   ): Promise<TranscriptionResultType | null> {
-    await this.ac
-      .user(user.id)
-      .workspace(workspaceId)
-      .allowLocal()
-      .assert('Workspace.Copilot');
-
+    const mode = await this.access.transcriptResource(user.id, workspaceId, {
+      taskId,
+    });
     const jobResult = await this.transcript.retryTask(
       user.id,
       workspaceId,
-      taskId
+      taskId,
+      mode === 'personal'
     );
     return this.handleJobResult(jobResult);
   }
@@ -405,17 +380,22 @@ export class CopilotTranscriptionResolver {
     @Args('workspaceId') workspaceId: string,
     @Args('taskId') taskId: string
   ): Promise<TranscriptionResultType | null> {
-    await this.ac
-      .user(user.id)
-      .workspace(workspaceId)
-      .allowLocal()
-      .assert('Workspace.Copilot');
-    const job = await this.transcript.settleTask(user.id, workspaceId, taskId);
+    const mode = await this.access.transcriptResource(user.id, workspaceId, {
+      taskId,
+    });
+    const job = await this.transcript.settleTask(
+      user.id,
+      workspaceId,
+      taskId,
+      mode === 'personal'
+    );
     return this.handleJobResult(job);
   }
 
   @ResolveField(() => TranscriptionResultType, {
     nullable: true,
+    deprecationReason:
+      'Use realtime subscription "copilot.transcript.task.changed" instead.',
   })
   async transcriptTask(
     @Parent() copilot: CopilotType,
@@ -425,20 +405,21 @@ export class CopilotTranscriptionResolver {
     @Args('blobId', { nullable: true })
     blobId?: string
   ): Promise<TranscriptionResultType | null> {
+    // DEPRECATED-0.26-COMPAT(realtime): remove after server no longer supports 0.26.x clients.
     if (!copilot.workspaceId) return null;
     if (!taskId && !blobId) return null;
 
-    await this.ac
-      .user(user.id)
-      .workspace(copilot.workspaceId)
-      .allowLocal()
-      .assert('Workspace.Copilot');
-
+    const mode = await this.access.transcriptResource(
+      user.id,
+      copilot.workspaceId,
+      { taskId, blobId }
+    );
     const job = await this.transcript.queryTask(
       user.id,
       copilot.workspaceId,
       taskId,
-      blobId
+      blobId,
+      mode === 'personal'
     );
     return this.handleJobResult(job);
   }

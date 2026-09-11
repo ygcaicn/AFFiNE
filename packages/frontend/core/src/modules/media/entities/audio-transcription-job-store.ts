@@ -1,13 +1,13 @@
 import {
-  getTranscriptTaskQuery,
-  retryTranscriptTaskMutation,
   settleTranscriptTaskMutation,
   submitTranscriptTaskMutation,
+  type TranscriptionResultType,
 } from '@affine/graphql';
 import { Entity } from '@toeverything/infra';
 
 import type { DefaultServerService, WorkspaceServerService } from '../../cloud';
 import { GraphQLService } from '../../cloud/services/graphql';
+import type { NbstoreService } from '../../storage';
 import type { WorkspaceService } from '../../workspace';
 
 export class AudioTranscriptionJobStore extends Entity<{
@@ -20,7 +20,8 @@ export class AudioTranscriptionJobStore extends Entity<{
   constructor(
     private readonly workspaceService: WorkspaceService,
     private readonly workspaceServerService: WorkspaceServerService,
-    private readonly defaultServerService: DefaultServerService
+    private readonly defaultServerService: DefaultServerService,
+    private readonly nbstoreService: NbstoreService
   ) {
     super();
   }
@@ -62,44 +63,37 @@ export class AudioTranscriptionJobStore extends Entity<{
   };
 
   retryTranscriptTask = async (taskId: string) => {
-    const graphqlService = this.graphqlService;
-    if (!graphqlService) {
-      throw new Error('No graphql service available');
-    }
-    const response = await graphqlService.gql({
-      query: retryTranscriptTaskMutation,
-      variables: {
-        taskId,
-        workspaceId: this.currentWorkspaceId,
-      },
-    });
-    if (!response.retryTranscriptTask) {
+    const response = await this.nbstoreService.realtime.request(
+      'copilot.transcript.task.retry',
+      { taskId, workspaceId: this.currentWorkspaceId }
+    );
+    if (!response.task) {
       throw new Error('Failed to retry audio transcription');
     }
-    return response.retryTranscriptTask;
+    return response.task as TranscriptionResultType;
   };
 
-  getTranscriptTask = async (blobId: string, taskId?: string) => {
-    const graphqlService = this.graphqlService;
-    if (!graphqlService) {
-      throw new Error('No graphql service available');
-    }
+  getTranscriptTask = async (
+    blobId: string,
+    taskId?: string
+  ): Promise<TranscriptionResultType | null> => {
     const currentWorkspaceId = this.currentWorkspaceId;
     if (!currentWorkspaceId) {
       throw new Error('No current workspace id');
     }
-    const response = await graphqlService.gql({
-      query: getTranscriptTaskQuery,
-      variables: {
-        workspaceId: currentWorkspaceId,
-        taskId,
-        blobId,
-      },
-    });
-    if (!response.currentUser?.copilot?.transcriptTask) {
-      return null;
-    }
-    return response.currentUser.copilot.transcriptTask;
+    const response = await this.nbstoreService.realtime.request(
+      'copilot.transcript.task.get',
+      { workspaceId: currentWorkspaceId, taskId, blobId },
+      { timeoutMs: 10000 }
+    );
+    return response.task as TranscriptionResultType | null;
+  };
+
+  subscribeTranscriptTask = (taskId: string) => {
+    return this.nbstoreService.realtime.subscribe(
+      'copilot.transcript.task.changed',
+      { workspaceId: this.currentWorkspaceId, taskId }
+    );
   };
   settleTranscriptTask = async (taskId: string) => {
     const graphqlService = this.graphqlService;

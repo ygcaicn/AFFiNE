@@ -1,6 +1,4 @@
 import {
-  getTranscriptTaskQuery,
-  retryTranscriptTaskMutation,
   settleTranscriptTaskMutation,
   submitTranscriptTaskMutation,
 } from '@affine/graphql';
@@ -10,6 +8,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { DefaultServerService } from '../../cloud/services/default-server';
 import { GraphQLService } from '../../cloud/services/graphql';
 import { WorkspaceServerService } from '../../cloud/services/workspace-server';
+import { NbstoreService } from '../../storage';
 import { WorkspaceService } from '../../workspace';
 import { AudioTranscriptionJobStore } from './audio-transcription-job-store';
 
@@ -22,13 +21,20 @@ function createStore(
   gql: ReturnType<typeof vi.fn>,
   getAudioTranscriptionInput: () => Promise<AudioTranscriptionInput> = async () => ({
     files: [],
-  })
+  }),
+  realtimeRequest: ReturnType<typeof vi.fn> = vi
+    .fn()
+    .mockResolvedValue({ task: { id: 'task-2' } })
 ) {
   const framework = new Framework();
   const server = {
     scope: {
       get: (key: unknown) => (key === GraphQLService ? { gql } : null),
     },
+  };
+  const realtime = {
+    request: realtimeRequest,
+    subscribe: vi.fn(),
   };
   framework
     .service(WorkspaceService, {
@@ -42,10 +48,14 @@ function createStore(
     .service(DefaultServerService, {
       server: null,
     } as unknown as DefaultServerService)
+    .service(NbstoreService, {
+      realtime,
+    } as unknown as NbstoreService)
     .entity(AudioTranscriptionJobStore, [
       WorkspaceService,
       WorkspaceServerService,
       DefaultServerService,
+      NbstoreService,
     ]);
   return framework.provider().createEntity(AudioTranscriptionJobStore, {
     blobId: 'blob-1',
@@ -59,19 +69,16 @@ describe('AudioTranscriptionJobStore transcript task API', () => {
     const gql = vi
       .fn()
       .mockResolvedValueOnce({ submitTranscriptTask: { id: 'task-1' } })
-      .mockResolvedValueOnce({ retryTranscriptTask: { id: 'task-2' } })
-      .mockResolvedValueOnce({
-        currentUser: {
-          copilot: {
-            transcriptTask: { id: 'task-2' },
-          },
-        },
-      })
       .mockResolvedValueOnce({ settleTranscriptTask: { id: 'task-2' } });
-    const store = createStore(gql, async () => ({
-      files: [file],
-      input: { strategy: 'gemini' },
-    }));
+    const realtimeRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ task: { id: 'task-2', status: 'running' } })
+      .mockResolvedValueOnce({ task: { id: 'task-2' } });
+    const store = createStore(
+      gql,
+      async () => ({ files: [file] }),
+      realtimeRequest
+    );
 
     await store.submitTranscriptTask();
     await store.retryTranscriptTask('task-1');
@@ -86,33 +93,12 @@ describe('AudioTranscriptionJobStore transcript task API', () => {
           workspaceId: 'workspace-1',
           blobId: 'blob-1',
           blobs: [file],
-          input: { strategy: 'gemini' },
+          input: undefined,
         },
       })
     );
     expect(gql).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({
-        query: retryTranscriptTaskMutation,
-        variables: {
-          workspaceId: 'workspace-1',
-          taskId: 'task-1',
-        },
-      })
-    );
-    expect(gql).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        query: getTranscriptTaskQuery,
-        variables: {
-          workspaceId: 'workspace-1',
-          taskId: 'task-2',
-          blobId: 'blob-1',
-        },
-      })
-    );
-    expect(gql).toHaveBeenNthCalledWith(
-      4,
       expect.objectContaining({
         query: settleTranscriptTaskMutation,
         variables: {
@@ -120,6 +106,24 @@ describe('AudioTranscriptionJobStore transcript task API', () => {
           taskId: 'task-2',
         },
       })
+    );
+    expect(realtimeRequest).toHaveBeenNthCalledWith(
+      1,
+      'copilot.transcript.task.retry',
+      {
+        workspaceId: 'workspace-1',
+        taskId: 'task-1',
+      }
+    );
+    expect(realtimeRequest).toHaveBeenNthCalledWith(
+      2,
+      'copilot.transcript.task.get',
+      {
+        workspaceId: 'workspace-1',
+        taskId: 'task-2',
+        blobId: 'blob-1',
+      },
+      { timeoutMs: 10000 }
     );
   });
 });

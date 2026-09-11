@@ -298,9 +298,9 @@ e2e(
 
     await db.$executeRaw`
     INSERT INTO workspace_admin_stats (
-      workspace_id, snapshot_count, snapshot_size, blob_count, blob_size, member_count, public_page_count, features, updated_at
+      workspace_id, snapshot_count, snapshot_size, blob_count, blob_size, member_count, public_page_count, updated_at
     )
-    VALUES (${workspace.id}, 1, 100, 1, 50, 1, 1, ARRAY[]::text[], NOW())
+    VALUES (${workspace.id}, 1, 100, 1, 50, 1, 1, NOW())
     ON CONFLICT (workspace_id)
     DO UPDATE SET
       snapshot_count = EXCLUDED.snapshot_count,
@@ -309,7 +309,6 @@ e2e(
       blob_size = EXCLUDED.blob_size,
       member_count = EXCLUDED.member_count,
       public_page_count = EXCLUDED.public_page_count,
-      features = EXCLUDED.features,
       updated_at = EXCLUDED.updated_at
   `;
 
@@ -358,6 +357,12 @@ e2e(
           requestedSize
           effectiveSize
         }
+        copilotWindow {
+          to
+          bucket
+          requestedSize
+          effectiveSize
+        }
         syncActiveUsersTimeline {
           minute
           activeUsers
@@ -366,6 +371,7 @@ e2e(
           date
           value
         }
+        generatedAt
       }
     }
   `;
@@ -375,6 +381,7 @@ e2e(
         storageHistoryDays: -10,
         syncHistoryHours: -10,
         sharedLinkWindowDays: -10,
+        copilotWindowDays: 500,
       },
     });
 
@@ -385,10 +392,53 @@ e2e(
     t.is(dashboard.storageWindow.bucket, 'Day');
     t.is(dashboard.storageWindow.effectiveSize, 1);
     t.is(dashboard.topSharedLinksWindow.effectiveSize, 1);
+    t.is(dashboard.copilotWindow.bucket, 'Day');
+    t.is(dashboard.copilotWindow.effectiveSize, 90);
+    t.is(
+      new Date(dashboard.copilotWindow.to).getTime(),
+      new Date(dashboard.generatedAt).getTime()
+    );
     t.is(dashboard.syncActiveUsersTimeline.length, 1);
     t.is(dashboard.workspaceStorageHistory.length, 1);
   }
 );
+
+e2e('adminWorkspace should serialize member roles as enum names', async t => {
+  const admin = await app.create(Mockers.User, {
+    feature: 'administrator',
+  });
+  await app.login(admin);
+
+  const owner = await app.create(Mockers.User);
+  const workspace = await app.create(Mockers.Workspace, {
+    owner: { id: owner.id },
+  });
+
+  const result = await gql(
+    `
+      query AdminWorkspace($id: String!) {
+        adminWorkspace(id: $id) {
+          id
+          members(skip: 0, take: 20) {
+            id
+            role
+            status
+          }
+        }
+      }
+    `,
+    { id: workspace.id }
+  );
+
+  t.falsy(result.errors);
+  t.is(result.data!.adminWorkspace.id, workspace.id);
+  t.true(
+    result.data!.adminWorkspace.members.some(
+      (member: { id: string; role: string }) =>
+        member.id === owner.id && member.role === 'Owner'
+    )
+  );
+});
 
 e2e(
   'adminDashboard should carry forward missing sync and storage samples',
@@ -428,9 +478,9 @@ e2e(
 
       await db.$executeRaw`
       INSERT INTO workspace_admin_stats (
-        workspace_id, snapshot_count, snapshot_size, blob_count, blob_size, member_count, public_page_count, features, updated_at
+        workspace_id, snapshot_count, snapshot_size, blob_count, blob_size, member_count, public_page_count, updated_at
       )
-      VALUES (${workspace.id}, 1, 130, 1, 70, 1, 0, ARRAY[]::text[], NOW())
+      VALUES (${workspace.id}, 1, 130, 1, 70, 1, 0, NOW())
       ON CONFLICT (workspace_id)
       DO UPDATE SET
         snapshot_count = EXCLUDED.snapshot_count,
@@ -439,7 +489,6 @@ e2e(
         blob_size = EXCLUDED.blob_size,
         member_count = EXCLUDED.member_count,
         public_page_count = EXCLUDED.public_page_count,
-        features = EXCLUDED.features,
         updated_at = EXCLUDED.updated_at
     `;
 
@@ -524,6 +573,36 @@ e2e(
         dashboard.workspaceStorageBytes
       );
       t.is(blobHistory[blobHistory.length - 1], dashboard.blobStorageBytes);
+
+      const baselineResult = await gql(
+        `
+      query AdminDashboard($input: AdminDashboardInput) {
+        adminDashboard(input: $input) {
+          workspaceStorageHistory {
+            value
+          }
+          blobStorageHistory {
+            value
+          }
+        }
+      }
+    `,
+        {
+          input: {
+            storageHistoryDays: 2,
+          },
+        }
+      );
+
+      t.falsy(baselineResult.errors);
+      t.is(
+        baselineResult.data!.adminDashboard.workspaceStorageHistory[0].value,
+        workspaceHistory[1]
+      );
+      t.is(
+        baselineResult.data!.adminDashboard.blobStorageHistory[0].value,
+        blobHistory[1]
+      );
     } finally {
       clock.restore();
     }
@@ -595,6 +674,7 @@ e2e(
     const workspace = await app.create(Mockers.Workspace, {
       owner: { id: owner.id },
     });
+    await app.create(Mockers.TeamWorkspace, { id: workspace.id });
     await app.create(Mockers.WorkspaceUser, {
       workspaceId: workspace.id,
       userId: member.id,
@@ -690,11 +770,11 @@ e2e(
     });
 
     t.falsy(ownerResult.errors);
-    t.is(ownerResult.data!.workspace.doc.analytics.window.effectiveSize, 7);
+    t.is(ownerResult.data!.workspace.doc.analytics.window.effectiveSize, 90);
     t.true(ownerResult.data!.workspace.doc.analytics.series.length > 0);
-    t.is(ownerResult.data!.workspace.doc.lastAccessedMembers.totalCount, 2);
-    t.is(ownerResult.data!.workspace.doc.lastAccessedMembers.edges.length, 2);
-    t.false(
+    t.is(ownerResult.data!.workspace.doc.lastAccessedMembers.totalCount, 3);
+    t.is(ownerResult.data!.workspace.doc.lastAccessedMembers.edges.length, 3);
+    t.true(
       ownerResult.data!.workspace.doc.lastAccessedMembers.edges.some(
         (edge: { node: { user: { id: string } } }) =>
           edge.node.user.id === staleMember.id
@@ -801,6 +881,6 @@ e2e(
       errors?: Array<{ extensions: Record<string, unknown> }>;
     };
     t.truthy(memberDenied.errors?.length);
-    t.is(memberDenied.errors![0].extensions.name, 'SPACE_ACCESS_DENIED');
+    t.is(memberDenied.errors![0].extensions.name, 'DOC_ACTION_DENIED');
   }
 );

@@ -19,8 +19,13 @@ import { repeat } from 'lit/directives/repeat.js';
 import { debounce, throttle } from 'lodash-es';
 
 import { AffineIcon } from '../../_common/icons';
-import { type AIError, AIProvider, UnauthorizedError } from '../../provider';
-import { mergeStreamObjects } from '../../utils/stream-objects';
+import {
+  AIAppEvents,
+  type AIError,
+  GeneralNetworkError,
+  UnauthorizedError,
+} from '../../provider';
+import type { AIChatRuntime, AIChatSnapshot } from '../../runtime/chat';
 import type { DocDisplayConfig } from '../ai-chat-chips';
 import { type ChatContextValue } from '../ai-chat-content/type';
 import type { AIReasoningConfig } from '../ai-chat-input';
@@ -30,12 +35,7 @@ import {
   AI_CHAT_SCROLL_DOWN_INDICATOR_THRESHOLD,
 } from './auto-scroll';
 import { AIPreloadConfig } from './preload-config';
-import {
-  type HistoryMessage,
-  isChatAction,
-  isChatMessage,
-  StreamObjectSchema,
-} from './type';
+import { type HistoryMessage, isChatAction, isChatMessage } from './type';
 
 export class AIChatMessages extends WithDisposable(ShadowlessElement) {
   static override styles = css`
@@ -179,9 +179,10 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
   accessor session!: CopilotChatHistoryFragment | null | undefined;
 
   @property({ attribute: false })
-  accessor createSession!: () => Promise<
-    CopilotChatHistoryFragment | undefined
-  >;
+  accessor runtime: AIChatRuntime | null | undefined;
+
+  @property({ attribute: false })
+  accessor runtimeSnapshot: AIChatSnapshot | null | undefined;
 
   @property({ attribute: false })
   accessor updateContext!: (context: Partial<ChatContextValue>) => void;
@@ -227,8 +228,21 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
 
   private _lastObservedScrollTop = 0;
 
-  private get _isReasoningActive() {
-    return !!this.reasoningConfig.enabled.value;
+  private get chatStatus() {
+    return this.runtimeSnapshot?.status ?? this.chatContextValue.status;
+  }
+
+  private get chatError(): AIError | null {
+    return this.toAIError(
+      this.runtimeSnapshot?.error ?? this.chatContextValue.error
+    );
+  }
+
+  private toAIError(error: Error | null): AIError | null {
+    if (!error) return null;
+    return 'type' in error
+      ? (error as AIError)
+      : new GeneralNetworkError(error.message);
   }
 
   private _renderAIOnboarding() {
@@ -296,8 +310,20 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
     return scrollHeight - scrollTop - clientHeight;
   }
 
+  private _getMessageKey(item: HistoryMessage, index: number) {
+    const tabKey =
+      this.runtimeSnapshot?.activeTabId ??
+      this.runtimeSnapshot?.activeSessionId ??
+      'legacy';
+    if (isChatMessage(item)) {
+      return `${tabKey}:${item.id || index}`;
+    }
+    return `${tabKey}:${index}`;
+  }
+
   protected override render() {
-    const { status, error } = this.chatContextValue;
+    const status = this.chatStatus;
+    const error = this.chatError;
     const { isHistoryLoading } = this;
     const filteredItems = this.messages;
 
@@ -311,77 +337,83 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
         })}
         data-testid="chat-panel-messages-container"
       >
-        ${filteredItems.length === 0
-          ? html`<div
-              class="messages-placeholder"
-              data-testid="chat-panel-messages-placeholder"
-            >
-              ${AffineIcon(
-                isHistoryLoading
-                  ? 'var(--affine-icon-secondary)'
-                  : 'var(--affine-primary-color)'
-              )}
-              <div
-                class="messages-placeholder-title"
-                data-loading=${isHistoryLoading}
+        ${
+          filteredItems.length === 0
+            ? html`<div
+                class="messages-placeholder"
+                data-testid="chat-panel-messages-placeholder"
               >
-                ${this.isHistoryLoading
-                  ? html`<span data-testid="chat-panel-loading-state"
-                      >AFFiNE AI is loading history...</span
-                    >`
-                  : html`<span data-testid="chat-panel-empty-state"
-                      >What can I help you with?</span
-                    >`}
-              </div>
-              ${this.independentMode ? nothing : this._renderAIOnboarding()}
-            </div> `
-          : repeat(
-              filteredItems,
-              (_, index) => index,
-              (item, index) => {
-                const isLast = index === filteredItems.length - 1;
-                if (isChatMessage(item) && item.role === 'user') {
-                  return html`<chat-message-user
-                    .item=${item}
-                  ></chat-message-user>`;
-                } else if (isChatMessage(item) && item.role === 'assistant') {
-                  return html`<chat-message-assistant
-                    .host=${this.host}
-                    .session=${this.session}
-                    .item=${item}
-                    .isLast=${isLast}
-                    .status=${isLast ? status : 'idle'}
-                    .error=${isLast ? error : null}
-                    .extensions=${this.extensions}
-                    .affineFeatureFlagService=${this.affineFeatureFlagService}
-                    .affineThemeService=${this.affineThemeService}
-                    .notificationService=${this.notificationService}
-                    .retry=${() => this.retry()}
-                    .width=${this.width}
-                    .independentMode=${this.independentMode}
-                    .docDisplayService=${this.docDisplayService}
-                    .peekViewService=${this.peekViewService}
-                    .onOpenDoc=${this.onOpenDoc}
-                  ></chat-message-assistant>`;
-                } else if (isChatAction(item) && this.host) {
-                  return html`<chat-message-action
-                    .host=${this.host}
-                    .item=${item}
-                  ></chat-message-action>`;
+                ${AffineIcon(
+                  isHistoryLoading
+                    ? 'var(--affine-icon-secondary)'
+                    : 'var(--affine-primary-color)'
+                )}
+                <div
+                  class="messages-placeholder-title"
+                  data-loading=${isHistoryLoading}
+                >
+                  ${
+                    this.isHistoryLoading
+                      ? html`<span data-testid="chat-panel-loading-state"
+                          >AFFiNE AI is loading history...</span
+                        >`
+                      : html`<span data-testid="chat-panel-empty-state"
+                          >What can I help you with?</span
+                        >`
+                  }
+                </div>
+                ${this.independentMode ? nothing : this._renderAIOnboarding()}
+              </div> `
+            : repeat(
+                filteredItems,
+                (item, index) => this._getMessageKey(item, index),
+                (item, index) => {
+                  const isLast = index === filteredItems.length - 1;
+                  if (isChatMessage(item) && item.role === 'user') {
+                    return html`<chat-message-user
+                      .item=${item}
+                    ></chat-message-user>`;
+                  } else if (isChatMessage(item) && item.role === 'assistant') {
+                    return html`<chat-message-assistant
+                      .host=${this.host}
+                      .session=${this.session}
+                      .item=${item}
+                      .isLast=${isLast}
+                      .status=${isLast ? status : 'idle'}
+                      .error=${isLast ? error : null}
+                      .extensions=${this.extensions}
+                      .affineFeatureFlagService=${this.affineFeatureFlagService}
+                      .affineThemeService=${this.affineThemeService}
+                      .notificationService=${this.notificationService}
+                      .retry=${() => this.retry()}
+                      .width=${this.width}
+                      .independentMode=${this.independentMode}
+                      .docDisplayService=${this.docDisplayService}
+                      .peekViewService=${this.peekViewService}
+                      .onOpenDoc=${this.onOpenDoc}
+                    ></chat-message-assistant>`;
+                  } else if (isChatAction(item) && this.host) {
+                    return html`<chat-message-action
+                      .host=${this.host}
+                      .item=${item}
+                    ></chat-message-action>`;
+                  }
+                  return nothing;
                 }
-                return nothing;
-              }
-            )}
+              )
+        }
       </div>
-      ${showDownIndicator && filteredItems.length > 0
-        ? html`<div
-            data-testid="chat-panel-scroll-down-indicator"
-            class="down-indicator"
-            @click=${this._onDownIndicatorClick}
-          >
-            ${ArrowDownIcon()}
-          </div>`
-        : nothing}
+      ${
+        showDownIndicator && filteredItems.length > 0
+          ? html`<div
+              data-testid="chat-panel-scroll-down-indicator"
+              class="down-indicator"
+              @click=${this._onDownIndicatorClick}
+            >
+              ${ArrowDownIcon()}
+            </div>`
+          : nothing
+      }
     `;
   }
 
@@ -389,21 +421,19 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
     super.connectedCallback();
     const { disposables } = this;
 
-    Promise.resolve(AIProvider.userInfo)
-      .then(res => {
-        this.avatarUrl = res?.avatarUrl ?? '';
-      })
-      .catch(console.error);
+    this.avatarUrl = AIAppEvents.userInfo.value?.avatarUrl ?? '';
 
     disposables.add(
-      AIProvider.slots.userInfo.subscribe(userInfo => {
-        const { status, error } = this.chatContextValue;
+      AIAppEvents.userInfo.subscribe(userInfo => {
+        const status = this.chatStatus;
+        const error = this.chatError;
         this.avatarUrl = userInfo?.avatarUrl ?? '';
         if (
           status === 'error' &&
           error instanceof UnauthorizedError &&
           userInfo
         ) {
+          this.runtime?.dispatch({ type: 'clearError' }).catch(console.error);
           this.updateContext({ status: 'idle', error: null });
         }
       })
@@ -452,7 +482,7 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
     if (changedProperties.has('messages')) {
       this._onScroll();
 
-      if (this.chatContextValue.status === 'transmitting') {
+      if (this.chatStatus === 'transmitting') {
         this._throttledScrollToEnd();
       } else if (this._autoScrollEnabled) {
         this.scrollToEnd();
@@ -460,9 +490,9 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
     }
 
     if (
-      changedProperties.has('chatContextValue') &&
-      (this.chatContextValue.status === 'success' ||
-        this.chatContextValue.status === 'error')
+      (changedProperties.has('chatContextValue') ||
+        changedProperties.has('runtimeSnapshot')) &&
+      (this.chatStatus === 'success' || this.chatStatus === 'error')
     ) {
       this._onScroll();
     }
@@ -484,69 +514,11 @@ export class AIChatMessages extends WithDisposable(ShadowlessElement) {
   }
 
   retry = async () => {
-    try {
-      const sessionId = (await this.createSession())?.sessionId;
-      if (!sessionId) return;
-      if (!AIProvider.actions.chat) return;
-
-      const abortController = new AbortController();
-      const messages = [...this.chatContextValue.messages];
-      const last = messages[messages.length - 1];
-      if ('content' in last) {
-        last.content = '';
-        last.streamObjects = [];
-        last.createdAt = new Date().toISOString();
-      }
-      this.updateContext({
-        messages,
-        status: 'loading',
-        error: null,
-        abortController,
-      });
-
-      const stream = await AIProvider.actions.chat({
-        sessionId,
-        retry: true,
-        docId: this.docId,
-        workspaceId: this.workspaceId,
-        stream: true,
-        signal: abortController.signal,
-        where: 'chat-panel',
-        control: 'chat-send',
-        isRootSession: true,
-        reasoning: this._isReasoningActive,
-        toolsConfig: this.aiToolsConfigService.config.value,
-      });
-
-      for await (const text of stream) {
-        const messages = this.chatContextValue.messages.slice(0);
-        const last = messages.at(-1);
-        if (last && isChatMessage(last)) {
-          try {
-            const parsed = StreamObjectSchema.parse(JSON.parse(text));
-            const streamObjects = mergeStreamObjects([
-              ...(last.streamObjects ?? []),
-              parsed,
-            ]);
-            messages[messages.length - 1] = {
-              ...last,
-              streamObjects,
-            };
-          } catch {
-            messages[messages.length - 1] = {
-              ...last,
-              content: last.content + text,
-            };
-          }
-          this.updateContext({ messages, status: 'transmitting' });
-        }
-      }
-
-      this.updateContext({ status: 'success' });
-    } catch (error) {
-      this.updateContext({ status: 'error', error: error as AIError });
-    } finally {
-      this.updateContext({ abortController: null });
-    }
+    if (!this.runtime) return;
+    const last = this.messages.at(-1);
+    await this.runtime.dispatch({
+      type: 'retry',
+      messageId: last && isChatMessage(last) ? last.id : '',
+    });
   };
 }

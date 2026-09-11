@@ -33,6 +33,7 @@ const AffineEditorSettingSchema = z.object({
   newDocDateTitleFormat: z
     .enum(newDocDateTitleFormatOptions)
     .default('DD-MM-YYYY'),
+  displayAddIconOption: z.boolean().default(true),
   fullWidthLayout: z.boolean().default(false),
   displayDocInfo: z.boolean().default(true),
   displayBiDirectionalLink: z.boolean().default(true),
@@ -49,6 +50,7 @@ const AffineEditorSettingSchema = z.object({
     .default('open-in-active-view'),
   // linux only:
   enableMiddleClickPaste: z.boolean().default(false),
+  codeBlockLineNumbers: z.boolean().default(true),
 });
 
 export const EditorSettingSchema = BSEditorSettingSchema.merge(
